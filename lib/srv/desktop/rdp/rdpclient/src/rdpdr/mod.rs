@@ -755,7 +755,7 @@ impl Client {
         if let Some(file) = self.file_cache.remove(rdp_req.device_io_request.file_id) {
             self.tdp_sd_write(rdp_req, file)
         } else {
-            self.prep_write_response(rdp_req, NTSTATUS::STATUS_UNSUCCESSFUL, 0)
+            self.prep_write_response(rdp_req.device_io_request, NTSTATUS::STATUS_UNSUCCESSFUL, 0)
         }
     }
 
@@ -766,7 +766,8 @@ impl Client {
     ) -> RdpResult<Vec<Vec<u8>>> {
         let rdp_req = ServerDriveSetInformationRequest::decode(device_io_request, payload)?;
 
-        // TODO(LKozlowski): handle it?
+        // TODO(LKozlowski): right now we just generate response based on the request without handling it
+        // we should implement at least the FileRenameInformation when we implement the TDP Move message.
         let resp = ClientDriveSetInformationResponse::new(&rdp_req, NTSTATUS::STATUS_SUCCESS);
         debug!("replying with: {:?}", resp);
         let resp = self
@@ -1102,7 +1103,7 @@ impl Client {
 
     fn prep_write_response(
         &self,
-        req: DeviceWriteRequest,
+        req: DeviceIoRequest,
         io_status: NTSTATUS,
         length: u32,
     ) -> RdpResult<Vec<Vec<u8>>> {
@@ -1209,13 +1210,10 @@ impl Client {
         rdp_req: DeviceReadRequest,
         file: FileCacheObject,
     ) -> RdpResult<Vec<Vec<u8>>> {
-        let path_length = file.path.len() as u32;
-
         let tdp_req = SharedDirectoryReadRequest {
             completion_id: rdp_req.device_io_request.completion_id,
             directory_id: rdp_req.device_io_request.device_id,
             path: file.path,
-            path_length,
             length: rdp_req.length,
             offset: rdp_req.offset,
         };
@@ -1245,31 +1243,33 @@ impl Client {
         rdp_req: DeviceWriteRequest,
         file: FileCacheObject,
     ) -> RdpResult<Vec<Vec<u8>>> {
-        let path_length = file.path.len() as u32;
         let tdp_req = SharedDirectoryWriteRequest {
             completion_id: rdp_req.device_io_request.completion_id,
             directory_id: rdp_req.device_io_request.device_id,
             path: file.path,
-            path_length,
             offset: rdp_req.offset,
-            write_data_length: rdp_req.write_data.len() as u32,
-            write_data: rdp_req.write_data.as_ptr() as _,
+            write_data: rdp_req.write_data,
         };
         (self.tdp_sd_write_request)(tdp_req)?;
 
+        let device_io_request = rdp_req.device_io_request;
         self.pending_sd_write_resp_handlers.insert(
-            rdp_req.device_io_request.completion_id,
+            device_io_request.completion_id,
             Box::new(
                 move |cli: &mut Self,
                       res: SharedDirectoryWriteResponse|
                       -> RdpResult<Vec<Vec<u8>>> {
                     match res.err_code {
                         TdpErrCode::Nil => cli.prep_write_response(
-                            rdp_req,
+                            device_io_request,
                             NTSTATUS::STATUS_SUCCESS,
                             res.bytes_written,
                         ),
-                        _ => cli.prep_write_response(rdp_req, NTSTATUS::STATUS_UNSUCCESSFUL, 0),
+                        _ => cli.prep_write_response(
+                            device_io_request,
+                            NTSTATUS::STATUS_UNSUCCESSFUL,
+                            0,
+                        ),
                     }
                 },
             ),
@@ -1860,10 +1860,9 @@ impl ClientNameRequest {
 
         let computer_name_data = match self.unicode_flag {
             ClientNameRequestUnicodeFlag::Ascii => self.computer_name.as_bytes().to_vec(),
-            ClientNameRequestUnicodeFlag::Unicode => util::to_utf8(&self.computer_name),
+            ClientNameRequestUnicodeFlag::Unicode => util::to_unicode(&self.computer_name, true),
         };
 
-        // let computer_name_data = util::to_utf8(&self.computer_name);
         w.write_u32::<LittleEndian>(computer_name_data.len() as u32)?;
         w.extend_from_slice(&computer_name_data);
         Ok(w)
@@ -3049,8 +3048,7 @@ pub struct DeviceWriteResponse {
 }
 
 impl DeviceWriteResponse {
-    fn new(device_read_request: &DeviceWriteRequest, io_status: NTSTATUS, length: u32) -> Self {
-        let device_io_request = &device_read_request.device_io_request;
+    fn new(device_io_request: &DeviceIoRequest, io_status: NTSTATUS, length: u32) -> Self {
         Self {
             device_io_reply: DeviceIoResponse::new(
                 device_io_request,
@@ -3119,20 +3117,19 @@ impl ServerDriveSetInformationRequest {
             FileInformationClassLevel::from_u32(payload.read_u32::<LittleEndian>()?)
                 .ok_or_else(|| invalid_data_error("failed to read FileInformationClassLevel"))?;
 
-        let valid_levels = vec![
-            FileInformationClassLevel::FileBasicInformation,
-            FileInformationClassLevel::FileEndOfFileInformation,
-            FileInformationClassLevel::FileDispositionInformation,
-            FileInformationClassLevel::FileRenameInformation,
-            FileInformationClassLevel::FileAllocationInformation,
-        ];
-
-        if !valid_levels.contains(&file_information_class_level) {
-            return Err(invalid_data_error(&format!(
-                "read invalid FileInformationClassLevel: {:?}, expected one of {:?}",
-                file_information_class_level, valid_levels,
-            )));
-        }
+        match file_information_class_level {
+            FileInformationClassLevel::FileBasicInformation
+            | FileInformationClassLevel::FileEndOfFileInformation
+            | FileInformationClassLevel::FileDispositionInformation
+            | FileInformationClassLevel::FileRenameInformation
+            | FileInformationClassLevel::FileAllocationInformation => {}
+            _ => {
+                return Err(invalid_data_error(&format!(
+                    "read invalid FileInformationClassLevel: {:?}",
+                    file_information_class_level
+                )))
+            }
+        };
 
         let length = payload.read_u32::<LittleEndian>()?;
 
