@@ -32,16 +32,139 @@ detail in this guide:
 - **Agent mode:** You can deploy a single `teleport` daemon within the same host
   or Kubernetes pod as the application, database, or other resource it protects.
 
-  For capabilities such as kernel-level logging and user provisioning, we
-  recommend Teleport as a drop-in replacement for OpenSSH. Since Teleport
-  replaces the OpenSSH agent while preserving OpenSSH functionality, you get
-  deeper analytics without a net addition of an agent on your system.
+<Details title="Determining your resource needs">
+
+If you are considering deploying your Teleport instances separately from your
+infrastructure in order to conserve compute resources, we recommend benchmarking
+your Teleport cluster in a staging environment to determine the best deployment
+pattern.
+
+You can enable Teleport's diagnostics endpoint by including the `--diag-addr`
+flag when you start Teleport, making metrics available at the `/metrics` path of
+the endpoint you choose:
+
+```code
+# You can access metrics at 127.0.0.1:3000/metrics
+$ sudo teleport start --diag-addr=127.0.0.1:3000
+```
+
+You can use any Prometheus-compatible metrics collector to query the `/metrics`
+path. To track the resource utilization of a `teleport` process running a
+resource service, use the following metrics:
+
+|Metrics|Description|
+|---|---|
+|`process_cpu_seconds_total`| Total user and system CPU time spent in seconds|
+|`process_resident_memory_bytes`| RSS memory used by the `teleport` process |
+
+
+</Details>
 
 ## Agentless mode
 
+<Tabs>
+<TabItem label="Server Access">
 
+### How it works
+
+You can use Teleport-issued SSH certificates to access remote OpenSSH servers
+via your local `ssh` client, with no need to run additional software on your SSH
+hosts. 
+
+After you configure your SSH servers to offer host certificates based on
+Teleport's certificate authority, you can generate a local `ssh` configuration
+that uses the Proxy Service as an SSH proxy to your remote hosts.
+
+For detailed instructions, see our [OpenSSH guide](../../server-access/guides/openssh.mdx).
+
+{/* TODO: Add a diagram */}
+
+### When to use it
+
+We recommend agentless server access for legacy OpenSSH setups or use-cases
+where you cannot install daemons on your devices.
+
+For capabilities such as kernel-level logging and user provisioning, we
+recommend Teleport as a drop-in replacement for OpenSSH. Since Teleport
+replaces the OpenSSH agent while preserving OpenSSH functionality, you get
+deeper analytics without a net addition of an agent on your system.
+
+</TabItem>
+<TabItem title="Application Access">
+
+### How it works
+
+The Teleport Application Service runs within a `teleport` daemon and proxies
+HTTP requests to web applications that you have listed in the daemon's
+configuration file. Meanwhile, the Application Service periodically polls the
+applications it manages and updates its state depending on which applications
+are available. 
+
+For example, this configuration tracks three different applications, plus any
+applications registered with Teleport that were created as an
+[`app` resource](../../application-access/reference.mdx#application-resource)
+via `tctl` and include the label `env:dev`.
+
+```yaml
+app_service:
+  enabled: yes
+  # Matchers for application resources created with "tctl create" command.
+  resources:
+  - labels:
+      "env": "dev"
+  apps:
+  - name: "app1"
+    description: "This is one application"
+    uri: "http://app1.example.com:3000"
+  - name: "app2"
+    description: "This is a second application"
+    uri: "http://app2.example.com:3000"
+  - name: "app3"
+    description: "This is a third application"
+    uri: "http://app3.example.com:3000"
+```
+
+Since the Application Service is an HTTP proxy, you can run it on a separate
+host from the applications it manages. You can also deploy a pool of `teleport`
+instances, each running the Application Service, and use a load balancer to
+direct client requests to an available instance.
+
+{/* TODO: Double-check the load balancer statement */}
+
+{/* TODO: Add a diagram */}
+
+### When to use it
+
+Agentless Application Access is especially useful for cloud-based services. For
+example,read our
+[AWS Management Console Access](../../application-access/guides/aws-console.mdx)
+guide.
+
+You must ensure that all applications registered with the Application Service
+are only accessible to traffic from the Teleport Proxy Service. {/* TODO: How? */}
+
+</TabItem>
+</Tabs>
 {/* TODO How to make this work for each service: add a Tabs component with a
-TabItem for each service:
+TabItem for the database service:
+
+- explaining how agentless mode works for that service
+- including an example config 
+- when you would want to use agentless mode for that service
+- A diagram if needed
+
+*/} 
+{/* TODO How to make this work for each service: add a Tabs component with a
+TabItem for the Kubernetes service:
+
+- explaining how agentless mode works for that service
+- including an example config 
+- when you would want to use agentless mode for that service
+- A diagram if needed
+
+*/} 
+{/* TODO How to make this work for each service: add a Tabs component with a
+TabItem for the Desktop service:
 
 - explaining how agentless mode works for that service
 - including an example config 
@@ -50,19 +173,86 @@ TabItem for each service:
 
 */} 
 
-{/* TODO: How would a pool of resource services work? Are these services
-stateless? If you deploy them behind a load balancer, would the load balancer
-need to terminate TLS? **It depends on the service!** /}
-
-{/* TODO RE: the SSH service, talk about running
-without a resource service */}
-
 {/* TODO: Note that you can also deploy resource services in the same `teleport` process as the Auth/Proxy, but that process _must_ include both the Auth and Proxy: https://gravitational.slack.com/archives/C01TYKHFVTQ/p1655396993351109?thread_ts=1655396125.961999&cid=C01TYKHFVTQ */}
 
 ## Agent mode
 
+<Tabs>
+<TabItem title="Server Access">
+
+### How it works
+
+You can configure the `teleport` daemon to run an SSH server that enables access
+to the local host. Run the following commands to generate a **join token** that you will
+use to register a remote host with your Teleport cluster:
+
+<ScopedBlock scope="cloud">
+
+```code
+# Log in to your cluster via tsh so you can use tctl remotely
+$ tsh login --proxy=mytenant.teleport.sh --user=myuser
+$ tctl tokens add --type=node
+```
+
+</ScopedBlock>
+<ScopedBlock scope={["oss", "enterprise"]}>
+
+```code
+# Log in to your cluster via tsh so you can use tctl remotely
+$ tsh login --proxy=teleport.example.com --user=myuser
+$ tctl tokens add --type=node
+```
+
+</ScopedBlock>
+
+Next, start `teleport` on your Node with the join token you created:
+
+<ScopedBlock scope={["oss", "enterprise"]}>
+
+```code
+sudo teleport start \
+   --roles=node \
+   --token=${TOKEN?} \
+   --auth-server=tele.example.com:443\
+```
+</ScopedBlock>
+<ScopedBlock scope={["cloud"]}>
+
+```code
+sudo teleport start \
+   --roles=node \
+   --token=${TOKEN?} \
+   --auth-server=mytenant.teleport.sh:443\
+```
+</ScopedBlock>
+
+For more details on how to run the Teleport SSH Service, see our
+[Server Access Getting Started Guide](../../server-access/getting-started.mdx).
+
+{/* TODO: Add a diagram */}
+
+### When to use it
+
+{/* TODO: This description repeats an earlier paragraph. Rephrase? */}
+
+For capabilities such as kernel-level logging and user provisioning, we
+recommend Teleport as a drop-in replacement for OpenSSH. Since Teleport replaces
+the OpenSSH agent while preserving OpenSSH functionality, you get deeper
+analytics without a net addition of an agent on your system. 
+  
+</TabItem>
+
 {/* TODO How to make this work for each service: add a Tabs component with a
-TabItem for each service:
+TabItem for the database service:
+
+- explaining how agent mode works for that service
+- including an example config 
+- when you would want to use agent mode for that service
+- A diagram if needed
+
+*/}  
+{/* TODO How to make this work for each service: add a Tabs component with a
+TabItem for the Kubernetes service:
 
 - explaining how agent mode works for that service
 - including an example config 
@@ -71,5 +261,43 @@ TabItem for each service:
 
 */}  
 
-{/* TODO: Some services don't support agent mode, right? The Desktop Service is
-the one that comes to mind */}
+<TabItem title="Application Service">
+
+You can configure the Teleport Application Service to run on the same host as
+the application it manages access to.
+
+### How it works
+
+The Teleport Application Service runs within a `teleport` daemon and proxies
+HTTP requests to web applications that you have listed in the daemon's
+configuration file. Applications run on the same host as the `teleport` daemon.
+For example, this configuration manages access to one local application:
+
+```yaml
+app_service:
+  enabled: yes
+  apps:
+  - name: "app1"
+    description: "This is one application"
+    uri: "http://localhost:3000"
+```
+
+{/* TODO: Add a diagram */}
+
+### When to use it
+
+When running on the same host as the applications it manages access to, network
+configuration for the Application Service is straightforward: expose the port
+for the Application Service to clients, and the port for your applications only to
+internal traffic. With this approach, you do not need to re-architect your network
+in order to proxy traffic to your applications. 
+ 
+</TabItem>
+
+<TabItem title="Windows Desktop Service">
+
+The Windows Desktop Service does not support agent mode, and must be run on a
+Linux host separately from the remote servers you want to manage access to.
+
+</TabItem>
+</Tabs>
