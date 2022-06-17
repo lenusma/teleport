@@ -20,8 +20,11 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"testing"
 
+	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/utils"
+	"github.com/stretchr/testify/require"
 )
 
 // ports contains tcp ports allocated for all integration tests.
@@ -77,6 +80,30 @@ func SingleProxyPortSetup() *InstancePorts {
 		isSinglePortSetup: true,
 	}
 }
+
+type InstanceListeners struct {
+	Web               string
+	SSH               string
+	SSHProxy          string
+	Auth              string
+	ReverseTunnel     string
+	MySQL             string
+	Postgres          string
+	Mongo             string
+	IsSinglePortSetup bool
+}
+
+func StandardListenerSetup(t *testing.T, fds *[]service.FileDescriptor) *InstanceListeners {
+	return &InstanceListeners{
+		Web:           NewListener(t, string(service.ListenerProxyWeb), fds),
+		SSH:           NewListener(t, string(service.ListenerNodeSSH), fds),
+		Auth:          NewListener(t, string(service.ListenerAuthSSH), fds),
+		SSHProxy:      NewListener(t, string(service.ListenerProxySSH), fds),
+		ReverseTunnel: NewListener(t, string(service.ListenerProxyTunnel), fds),
+		MySQL:         NewListener(t, string(service.ListenerProxyMySQL), fds),
+	}
+}
+
 func StandardPortSetup() *InstancePorts {
 	return &InstancePorts{
 		Web:           NewInstancePort(),
@@ -140,6 +167,18 @@ type InstancePorts struct {
 	isSinglePortSetup bool
 }
 
+func Port(t *testing.T, addr string) int {
+	t.Helper()
+
+	_, portStr, err := net.SplitHostPort(addr)
+	require.NoError(t, err)
+
+	port, err := strconv.Atoi(portStr)
+	require.NoError(t, err)
+
+	return port
+}
+
 func (i *InstancePorts) GetPortSSHInt() int           { return int(*i.SSH) }
 func (i *InstancePorts) GetPortSSH() string           { return i.SSH.String() }
 func (i *InstancePorts) GetPortAuth() string          { return i.Auth.String() }
@@ -190,4 +229,43 @@ func (i *InstancePorts) GetReverseTunnelAddr() string {
 		return ""
 	}
 	return net.JoinHostPort(i.Host, i.GetPortReverseTunnel())
+}
+
+// NewListener creates a new TCP listener on 127.0.0.1:0, adds it to the
+// FileDescriptor slice (with the specified type) and returns its actual local
+// address as a string (for use in configuration). The idea is to subvert
+// Teleport's file-descriptor injection mechanism (used to share ports between
+// parent and child processes) to inject preconfigured listeners to Teleport
+// instances under test. The ports are allocated and bound at runtime, so there
+// should be no issies with port clashes on parallel tests.
+//
+// The resulting file descriptor is added to the `fds` slice, which can then be
+// given to a teleport instance on startup in order to suppl
+func NewListener(t *testing.T, ty string, fds *[]service.FileDescriptor) string {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer l.Close()
+	addr := l.Addr().String()
+
+	// File() returns a dup of the listener's file descriptor as an *os.File, so
+	// the original net.Listener still needs to be closed.
+	lf, err := l.(*net.TCPListener).File()
+	require.NoError(t, err)
+
+	// If the file descriptor slice ends up being passed to a TeleportProcess
+	// that successfully starts, listeners will either get "imported" and used
+	// or discarded and closed, this is just an extra safety measure that closes
+	// the listener at the end of the test anyway (the finalizer would do that
+	// anyway, in principle).
+	t.Cleanup(func() { lf.Close() })
+
+	*fds = append(*fds, service.FileDescriptor{
+		Type:    ty,
+		Address: addr,
+		File:    lf,
+	})
+
+	return addr
 }

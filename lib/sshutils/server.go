@@ -358,6 +358,7 @@ func (s *Server) acceptConnections() {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
+			s.log.Info(">>> error on ACCEPT")
 			if utils.IsUseOfClosedNetworkError(err) {
 				s.log.Debugf("Server %v has closed.", addr)
 				return
@@ -370,6 +371,7 @@ func (s *Server) acceptConnections() {
 				s.log.Debugf("Backoff on network error: %v.", err)
 			}
 		} else {
+			s.log.Info(">>> Hello, new connection")
 			go s.HandleConnection(conn)
 		}
 	}
