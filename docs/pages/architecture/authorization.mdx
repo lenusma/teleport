@@ -24,9 +24,9 @@ Each user is associated with one or several roles after successful authenticatio
 
 ### Interactive users
 
-Interactive users can be local and external.
+Interactive users can be local or external.
 Local user accounts store login credentials - password hash and MFA device data in Teleport's backend.
-External user accounts authenticate using SSO protocols - OAuth 2.0, OIDC or SAML.
+External user accounts authenticate with a third-party identity provider using SSO protocols - OAuth 2.0, OIDC or SAML.
 
 #### External users from SSO providers
 
@@ -99,7 +99,8 @@ Each Teleport role works by having two lists of rules: `allow` rules and `deny` 
 - Deny rules get evaluated first and take priority.
 - A rule consists of two parts: the resources and verbs.
 
-Here's an example of an allow rule describing a list verb applied to the SSH sessions resource. It means "allow users of this role to see a list of active SSH sessions".
+Here's an example of an allow rule describing a list verb applied to the sessions resource.
+It means "allow users of this role to see a list of recorded SSH or Kubernetes sessions".
 
 ```yaml
 allow:
@@ -125,8 +126,8 @@ In case if a user has many roles, the list of principals is merged in one set.
 
 ### Labels
 
-Role labels define what resources this role applies to. For example, let's
-review the role that specifies access for SSH nodes and kubernetes clusters:
+Role labels define what resources rules in the role apply to. For example, let's
+review a role that specifies access for SSH nodes and kubernetes clusters:
 
 ```yaml
 spec:
@@ -186,7 +187,7 @@ spec:
        'environment': ['prod']
 ```
 
-Here is how Teleport going to evaluate Alice's access:
+Here is how Teleport will evaluate Alice's access:
 
 * Alice can SSH as root to server labeled as `test` or `stage`
 * Alice can not SSH as root to server labeled as `prod`, because prod role
@@ -215,7 +216,7 @@ spec:
     # kubernetes_groups specifies Kubernetes groups a user with this role will assume.
     # You can refer to a SAML/OIDC trait via the "external" property bag.
     # This allows you to specify Kubernetes group membership in an identity manager:
-    kubernetes_groups: ["{{external.groups}}"]
+    kubernetes_groups: ['{{external.groups}}']
 ```
 
 <Notice type="tip">

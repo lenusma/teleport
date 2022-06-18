@@ -1016,7 +1016,7 @@
   "redirects": [
     {
       "source": "/architecture/users/",
-      "destination": "/architecture/authz/",
+      "destination": "/architecture/authorization/",
       "permanent": true
     },
     {

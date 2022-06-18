@@ -1,6 +1,6 @@
 ---
-title: Teleport Authentication Service, SSH, and Kubernetes certificates
-description: This chapter explains the concept of a Teleport Auth Service and Certificate Authority (CA) to issue SSH and Kubernetes certificates.
+title: Teleport Authentication
+description: This chapter explains how Teleport uses certificate authorities to authenticate users and services.
 h1: Teleport Authentication with Certificates
 ---
 
@@ -19,15 +19,15 @@ Certificate Authorities and short-lived certificates are the core of Teleport au
 In Teleport at the start of every connection, a user or a service has to present a valid certificate issued by
 a trusted certificate authority. Clients always initiate mutual TLS or mutual SSH connections.
 
-Teleport Certificate Authority issues short-lived x.509 for web services, databases and kubernetes clusters
-and SSH certificates for OpenSSH-compatible servers.
+Teleport Certificate Authority issues short-lived x.509 certificates for web services, databases, kubernetes clusters,
+desktops and SSH certificates for OpenSSH-compatible servers.
 
 ### Why certificates?
 
 - Certificates are tied to user or service identity. Any connection and action can be traced back to a user
 or a service.
 - Short-lived certificates automatically expire, there is no need to revoke them.
-- Certificates solve TOFU (trust on first use) problems. In a Teleport cluster, all servers have
+- Certificates solve trust on first use (TOFU) problems. In a Teleport cluster, all servers have
 identities and certificates of their own. They will not allow a connection if a client certificate is signed by an
 untrusted certificate authority.
 - Certificates enable mutually authenticated channel - mTLS, mTLS mitigates a wide range of attacks - spoofing, on-path attacks, credential stuffing and others.
@@ -46,7 +46,7 @@ without invalidating the certificates, so any system can validate the certificat
 
 ### X.509 certificates
 
-X.509 certificates are the same certificates you use in the browsers. They bind
+X.509 certificates are the same certificates you use when accessing websites with a browser. They bind
 identity to the public key with a certificate authority's signature.
 
 <Figure
@@ -58,12 +58,12 @@ identity to the public key with a certificate authority's signature.
 
 </Figure>
 
-Teleport uses x.509 certificates for Kubernetes, databases, web services and it's own internal
+Teleport uses x.509 certificates for Kubernetes, databases, web services and its own internal
 components - proxies, auth services to establish mutually authenticated TLS connections - mTLS.
 
 ### OpenSSH certificates
 
-OpenSSH are similar to X.509 (web) certificates and also bind identity of the user or a server
+OpenSSH certificates are similar to X.509 (web) certificates and also bind identity of the user or a server
 to the public key with a certificate authority's signature.
 
 <Figure
@@ -126,7 +126,7 @@ We recommend using SSO with GitHub, Okta or any other identity provider and get 
 
 ### Short-lived Certs for Services
 
-Deployment automation services, such as Jenkins, can use Teleport's machine ID
+Deployment automation services, such as Jenkins, can use Teleport's Machine ID
 service to receive and renew certificates. Teleport Machine ID's bot runs alongside
 services and rotates SSH and X.509 certificates.
 
@@ -147,7 +147,7 @@ within a cluster. To join proxies and nodes to the cluster and receive certifica
 
 Unlike users and services, internal services receive long-lived certificates.
 
-To renew these certificates, admins should use certificate rotation, the process of invalidating all
+To renew these certificates, admins should use certificate authority rotation, the process of invalidating all
 previously-issued certificates for nodes or users regardless of expiry and issuing a new ones,
 using a new certificate authority.
 
