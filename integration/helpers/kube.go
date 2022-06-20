@@ -53,15 +53,18 @@ func EnableKube(t *testing.T, config *service.Config, clusterName string) error 
 		return trace.Wrap(err)
 	}
 	err = kubeconfig.Update(kubeConfigPath, kubeconfig.Values{
+		// By default this needs to be an arbitrary address guaranteed not to
+		// be in use, so we're using port 0 for now.
+		ClusterAddr: "https://localhost:0",
+
 		TeleportClusterName: clusterName,
-		ClusterAddr:         "https://" + NewListener(t, "", &config.FileDescriptors),
 		Credentials:         key,
 	})
 	if err != nil {
 		return trace.Wrap(err)
 	}
 	config.Kube.Enabled = true
-	config.Kube.ListenAddr = utils.MustParseAddr(NewListener(t, service.ListenerProxyKube, &config.FileDescriptors))
+	config.Kube.ListenAddr = utils.MustParseAddr(NewListener(t, service.ListenerKube, &config.FileDescriptors))
 	return nil
 }
 

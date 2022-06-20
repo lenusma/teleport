@@ -25,10 +25,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// // ports contains tcp ports allocated for all integration tests.
-// // TODO: Replace all usage of `Ports` with FD-injected sockets as per
-// //       https://github.com/gravitational/teleport/pull/13346
-// var ports utils.PortList
+// ports contains tcp ports allocated for all integration tests.
+// TODO: Replace all usage of `Ports` with FD-injected sockets as per
+//       https://github.com/gravitational/teleport/pull/13346
+//var ports utils.PortList
 
 // func init() {
 // 	// Allocate tcp ports for all integration tests. 5000 should be plenty.
