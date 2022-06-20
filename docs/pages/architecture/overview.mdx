@@ -12,7 +12,7 @@ check out the [Admin Guide](../setup/admin.mdx)
 
 ## What makes Teleport different
 
-- Teleport legacy keys, passwords and shared secrets with short-lived X.509 and SSH certificates
+- Teleport replaces legacy keys, passwords and shared secrets with short-lived X.509 and SSH certificates
   for services and users accessing your infrastructure.
 - It proxies and inspects SSH, Kubernetes, Web, Database and Desktop access protocols.
 - It removes a need for VPN and connects multiple regions and organizations
@@ -27,7 +27,7 @@ Cluster controls access to resources - Linux or Windows servers, databases, Kube
 Windows desktops, cloud services and consoles, internal web applications and services.
 
 <Notice type="tip">
-To create a minimal Teleport cluster, you have run two services:
+To create a minimal Teleport cluster, you have to run two services:
 Teleport Auth Service and Teleport Proxy Service. For your home lab,
 you can run both services as a one binary and process.
 </Notice>
@@ -50,7 +50,7 @@ The auth service issues certificates to clients and maintains the audit log.
 
 <Notice type="tip">
 The auth service uses HTTPS and accepts client certificates for authentication.
-You don't have to deploy it on private net, but it's a good practice to restrict network access to it's port
+You don't have to deploy it on a private network, but it's a good practice to restrict network access to its port
 for defense in depth.
 </Notice>
 
@@ -65,7 +65,7 @@ directly with the backend.
 ### Teleport Proxy Service
 
 The proxy service allows access to cluster resources from the outside.
-It is the only service that has to be available from the public network.
+It is the only service that has to be available from any user-facing network.
 All public users and external services most of the time connect to the proxy.
 
 <Figure
@@ -79,7 +79,7 @@ All public users and external services most of the time connect to the proxy.
 </Figure>
 
 <Notice type="tip">
-In it's minimal configuration, the proxy service can multiplex all connections on one port and protocol, HTTPS.
+In its minimal configuration, the proxy service can multiplex all connections on one port and protocol, HTTPS.
 </Notice>
 
 <Notice type="tip">
@@ -95,7 +95,7 @@ Here is why we recommend Teleport Node service instead of OpenSSH:
 
 - The node service supports BPF recording of all syscalls, network calls and files accessed during SSH session.
 - It can record terminal sessions.
-- It provides automatic registration, certificate and certificate authority rotation,
+- It provides automatic registration, certificate and certificate authority rotation.
 - It can provision OS user and update sudoers files according to teleport roles.
 - You connect nodes to the proxy using outbound persistent tunnels, for your IoT lab or
 remote infrastructure.
