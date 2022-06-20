@@ -842,7 +842,7 @@ func (i *TeleInstance) StartDatabase(conf *service.Config) (*service.TeleportPro
 	return process, client, nil
 }
 
-func (i *TeleInstance) StartKube(conf *service.Config, clusterName string) (*service.TeleportProcess, error) {
+func (i *TeleInstance) StartKube(t *testing.T, conf *service.Config, clusterName string) (*service.TeleportProcess, error) {
 	dataDir, err := os.MkdirTemp("", "cluster-"+i.Secrets.SiteName)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -865,7 +865,7 @@ func (i *TeleInstance) StartKube(conf *service.Config, clusterName string) (*ser
 	conf.Databases.Enabled = false
 
 	conf.Kube.KubeconfigPath = filepath.Join(dataDir, "kube_config")
-	if err := EnableKube(conf, clusterName); err != nil {
+	if err := EnableKube(t, conf, clusterName); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	conf.Kube.ListenAddr = nil

@@ -17,8 +17,16 @@ limitations under the License.
 package integration
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"os"
+	"os/exec"
+	"regexp"
+	"runtime/pprof"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,9 +35,14 @@ import (
 	"github.com/gravitational/teleport/api/profile"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/integration/helpers"
+	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/bpf"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/service"
+	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/trace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -58,11 +71,14 @@ func (s *integrationTestSuite) bind(test integrationTest) func(t *testing.T) {
 // TestIntegrations acts as the master test suite for all integration tests
 // requiring standardised setup and teardown.
 func TestIntegrations(t *testing.T) {
+	// TODO: break these down into individual tests rather than subtests so
+	//       that we get better progress reporting, rather than have to wait
+	//       for the entire suite to complete
 	suite := newSuite(t)
 
 	t.Run("AuditOff", suite.bind(testAuditOff))
-	// t.Run("AuditOn", suite.bind(testAuditOn))
-	// t.Run("BPFExec", suite.bind(testBPFExec))
+	t.Run("AuditOn", suite.bind(testAuditOn))
+	t.Run("BPFExec", suite.bind(testBPFExec))
 	// t.Run("BPFInteractive", suite.bind(testBPFInteractive))
 	// t.Run("BPFSessionDifferentiation", suite.bind(testBPFSessionDifferentiation))
 	// t.Run("CmdLabels", suite.bind(testCmdLabels))
@@ -156,331 +172,322 @@ func TestIntegrations(t *testing.T) {
 // 	}
 // }
 
-// // testAuditOn creates a live session, records a bunch of data through it
-// // and then reads it back and compares against simulated reality.
-// func testAuditOn(t *testing.T, suite *integrationTestSuite) {
-// 	ctx := context.Background()
+// testAuditOn creates a live session, records a bunch of data through it
+// and then reads it back and compares against simulated reality.
+func testAuditOn(t *testing.T, suite *integrationTestSuite) {
+	ctx := context.Background()
 
-// 	tr := utils.NewTracer(utils.ThisFunction()).Start()
-// 	defer tr.Stop()
+	tr := utils.NewTracer(utils.ThisFunction()).Start()
+	defer tr.Stop()
 
-// 	tests := []struct {
-// 		comment          string
-// 		inRecordLocation string
-// 		inForwardAgent   bool
-// 		auditSessionsURI string
-// 	}{
-// 		{
-// 			comment:          "normal teleport",
-// 			inRecordLocation: types.RecordAtNode,
-// 			inForwardAgent:   false,
-// 		}, {
-// 			comment:          "recording proxy",
-// 			inRecordLocation: types.RecordAtProxy,
-// 			inForwardAgent:   true,
-// 		}, {
-// 			comment:          "normal teleport with upload to file server",
-// 			inRecordLocation: types.RecordAtNode,
-// 			inForwardAgent:   false,
-// 			auditSessionsURI: t.TempDir(),
-// 		}, {
-// 			comment:          "recording proxy with upload to file server",
-// 			inRecordLocation: types.RecordAtProxy,
-// 			inForwardAgent:   false,
-// 			auditSessionsURI: t.TempDir(),
-// 		}, {
-// 			comment:          "normal teleport, sync recording",
-// 			inRecordLocation: types.RecordAtNodeSync,
-// 			inForwardAgent:   false,
-// 		}, {
-// 			comment:          "recording proxy, sync recording",
-// 			inRecordLocation: types.RecordAtProxySync,
-// 			inForwardAgent:   true,
-// 		},
-// 	}
+	tests := []struct {
+		comment          string
+		inRecordLocation string
+		inForwardAgent   bool
+		auditSessionsURI string
+	}{
+		{
+			comment:          "normal teleport",
+			inRecordLocation: types.RecordAtNode,
+			inForwardAgent:   false,
+		}, {
+			comment:          "recording proxy",
+			inRecordLocation: types.RecordAtProxy,
+			inForwardAgent:   true,
+		}, {
+			comment:          "normal teleport with upload to file server",
+			inRecordLocation: types.RecordAtNode,
+			inForwardAgent:   false,
+			auditSessionsURI: t.TempDir(),
+		}, {
+			comment:          "recording proxy with upload to file server",
+			inRecordLocation: types.RecordAtProxy,
+			inForwardAgent:   false,
+			auditSessionsURI: t.TempDir(),
+		}, {
+			comment:          "normal teleport, sync recording",
+			inRecordLocation: types.RecordAtNodeSync,
+			inForwardAgent:   false,
+		}, {
+			comment:          "recording proxy, sync recording",
+			inRecordLocation: types.RecordAtProxySync,
+			inForwardAgent:   true,
+		},
+	}
 
-// 	for _, tt := range tests {
-// 		t.Run(tt.comment, func(t *testing.T) {
-// 			listeners := []service.FileDescriptor{}
+	for _, tt := range tests {
+		t.Run(tt.comment, func(t *testing.T) {
+			makeConfig := func() (*testing.T, []string, []*helpers.InstanceSecrets, *service.Config) {
+				auditConfig, err := types.NewClusterAuditConfig(types.ClusterAuditConfigSpecV2{
+					AuditSessionsURI: tt.auditSessionsURI,
+				})
+				require.NoError(t, err)
 
-// 			makeConfig := func() (*testing.T, []string, []*helpers.InstanceSecrets, *service.Config) {
-// 				auditConfig, err := types.NewClusterAuditConfig(types.ClusterAuditConfigSpecV2{
-// 					AuditSessionsURI: tt.auditSessionsURI,
-// 				})
-// 				require.NoError(t, err)
+				recConfig, err := types.NewSessionRecordingConfigFromConfigFile(types.SessionRecordingConfigSpecV2{
+					Mode: tt.inRecordLocation,
+				})
+				require.NoError(t, err)
 
-// 				recConfig, err := types.NewSessionRecordingConfigFromConfigFile(types.SessionRecordingConfigSpecV2{
-// 					Mode: tt.inRecordLocation,
-// 				})
-// 				require.NoError(t, err)
+				tconf := suite.defaultServiceConfig()
+				tconf.Auth.Enabled = true
+				tconf.Auth.AuditConfig = auditConfig
+				tconf.Auth.SessionRecordingConfig = recConfig
+				tconf.Proxy.Enabled = true
+				tconf.Proxy.DisableWebService = true
+				tconf.Proxy.DisableWebInterface = true
+				tconf.SSH.Enabled = true
+				return t, nil, nil, tconf
+			}
+			teleport := suite.NewTeleportWithConfig(makeConfig())
+			defer teleport.StopAll()
 
-// 				tconf := suite.defaultServiceConfig()
-// 				tconf.Auth.Enabled = true
-// 				tconf.Auth.AuditConfig = auditConfig
-// 				tconf.Auth.SessionRecordingConfig = recConfig
-// 				tconf.Proxy.Enabled = true
-// 				tconf.Proxy.DisableWebService = true
-// 				tconf.Proxy.DisableWebInterface = true
-// 				tconf.SSH.Enabled = true
-// 				return t, nil, nil, tconf
-// 			}
-// 			teleport := suite.NewTeleportWithConfig(makeConfig())
-// 			defer teleport.StopAll()
+			// Start a node.
+			nodeConf := suite.defaultServiceConfig()
+			nodeConf.HostUUID = "node"
+			nodeConf.Hostname = "node"
+			nodeConf.SSH.Enabled = true
+			nodeConf.SSH.Addr.Addr = helpers.NewListener(t, service.ListenerNodeSSH, &nodeConf.FileDescriptors)
+			nodeProcess, err := teleport.StartNode(nodeConf)
+			require.NoError(t, err)
 
-// 			// Start a node.
-// 			nodeSSHPort := helpers.NewPortValue()
-// 			nodeConfig := func() *service.Config {
-// 				tconf := suite.defaultServiceConfig()
+			// get access to a authClient for the cluster
+			site := teleport.GetSiteAPI(helpers.Site)
+			require.NotNil(t, site)
 
-// 				tconf.HostUUID = "node"
-// 				tconf.Hostname = "node"
+			// wait 10 seconds for both nodes to show up, otherwise
+			// we'll have trouble connecting to the node below.
+			waitForNodes := func(site auth.ClientI, count int) error {
+				tickCh := time.Tick(500 * time.Millisecond)
+				stopCh := time.After(10 * time.Second)
+				for {
+					select {
+					case <-tickCh:
+						nodesInSite, err := site.GetNodes(ctx, apidefaults.Namespace)
+						if err != nil && !trace.IsNotFound(err) {
+							return trace.Wrap(err)
+						}
+						if got, want := len(nodesInSite), count; got == want {
+							return nil
+						}
+					case <-stopCh:
+						return trace.BadParameter("waited 10s, did find %v nodes", count)
+					}
+				}
+			}
+			err = waitForNodes(site, 2)
+			require.NoError(t, err)
 
-// 				tconf.SSH.Enabled = true
-// 				tconf.SSH.Addr.Addr = net.JoinHostPort(teleport.Hostname, fmt.Sprintf("%v", nodeSSHPort))
+			// should have no sessions:
+			sessions, err := site.GetSessions(apidefaults.Namespace)
+			require.NoError(t, err)
+			require.Empty(t, sessions)
 
-// 				return tconf
-// 			}
-// 			nodeProcess, err := teleport.StartNode(nodeConfig())
-// 			require.NoError(t, err)
+			// create interactive session (this goroutine is this user's terminal time)
+			endC := make(chan error)
+			myTerm := NewTerminal(250)
+			go func() {
+				cl, err := teleport.NewClient(helpers.ClientConfig{
+					Login:        suite.Me.Username,
+					Cluster:      helpers.Site,
+					Host:         Host,
+					Port:         helpers.Port(t, nodeConf.SSH.Addr.Addr),
+					ForwardAgent: tt.inForwardAgent,
+				})
+				require.NoError(t, err)
+				cl.Stdout = myTerm
+				cl.Stdin = myTerm
 
-// 			// get access to a authClient for the cluster
-// 			site := teleport.GetSiteAPI(helpers.Site)
-// 			require.NotNil(t, site)
+				err = cl.SSH(context.TODO(), []string{}, false)
+				endC <- err
+			}()
 
-// 			// wait 10 seconds for both nodes to show up, otherwise
-// 			// we'll have trouble connecting to the node below.
-// 			waitForNodes := func(site auth.ClientI, count int) error {
-// 				tickCh := time.Tick(500 * time.Millisecond)
-// 				stopCh := time.After(10 * time.Second)
-// 				for {
-// 					select {
-// 					case <-tickCh:
-// 						nodesInSite, err := site.GetNodes(ctx, apidefaults.Namespace)
-// 						if err != nil && !trace.IsNotFound(err) {
-// 							return trace.Wrap(err)
-// 						}
-// 						if got, want := len(nodesInSite), count; got == want {
-// 							return nil
-// 						}
-// 					case <-stopCh:
-// 						return trace.BadParameter("waited 10s, did find %v nodes", count)
-// 					}
-// 				}
-// 			}
-// 			err = waitForNodes(site, 2)
-// 			require.NoError(t, err)
+			// wait until we've found the session in the audit log
+			getSession := func(site auth.ClientI) (*session.Session, error) {
+				timeout, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				sessions, err := waitForSessionToBeEstablished(timeout, apidefaults.Namespace, site)
+				if err != nil {
+					return nil, trace.Wrap(err)
+				}
+				return &sessions[0], nil
+			}
+			session, err := getSession(site)
+			require.NoError(t, err)
+			sessionID := session.ID
 
-// 			// should have no sessions:
-// 			sessions, err := site.GetSessions(apidefaults.Namespace)
-// 			require.NoError(t, err)
-// 			require.Empty(t, sessions)
+			// wait for the user to join this session:
+			for len(session.Parties) == 0 {
+				time.Sleep(time.Millisecond * 5)
+				session, err = site.GetSession(apidefaults.Namespace, sessionID)
+				require.NoError(t, err)
+			}
+			// make sure it's us who joined! :)
+			require.Equal(t, suite.Me.Username, session.Parties[0].User)
 
-// 			// create interactive session (this goroutine is this user's terminal time)
-// 			endC := make(chan error)
-// 			myTerm := NewTerminal(250)
-// 			go func() {
-// 				cl, err := teleport.NewClient(helpers.ClientConfig{
-// 					Login:        suite.Me.Username,
-// 					Cluster:      helpers.Site,
-// 					Host:         Host,
-// 					Port:         nodeSSHPort,
-// 					ForwardAgent: tt.inForwardAgent,
-// 				})
-// 				require.NoError(t, err)
-// 				cl.Stdout = myTerm
-// 				cl.Stdin = myTerm
+			// lets type "echo hi" followed by "enter" and then "exit" + "enter":
 
-// 				err = cl.SSH(context.TODO(), []string{}, false)
-// 				endC <- err
-// 			}()
+			myTerm.Type("\aecho hi\n\r\aexit\n\r\a")
 
-// 			// wait until we've found the session in the audit log
-// 			getSession := func(site auth.ClientI) (*session.Session, error) {
-// 				timeout, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-// 				defer cancel()
-// 				sessions, err := waitForSessionToBeEstablished(timeout, apidefaults.Namespace, site)
-// 				if err != nil {
-// 					return nil, trace.Wrap(err)
-// 				}
-// 				return &sessions[0], nil
-// 			}
-// 			session, err := getSession(site)
-// 			require.NoError(t, err)
-// 			sessionID := session.ID
+			// wait for session to end:
+			select {
+			case <-endC:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s: Timeout waiting for session to finish.", tt.comment)
+			}
 
-// 			// wait for the user to join this session:
-// 			for len(session.Parties) == 0 {
-// 				time.Sleep(time.Millisecond * 5)
-// 				session, err = site.GetSession(apidefaults.Namespace, sessionID)
-// 				require.NoError(t, err)
-// 			}
-// 			// make sure it's us who joined! :)
-// 			require.Equal(t, suite.Me.Username, session.Parties[0].User)
+			// wait for the upload of the right session to complete
+			timeoutC := time.After(10 * time.Second)
+		loop:
+			for {
+				select {
+				case event := <-teleport.UploadEventsC:
+					if event.SessionID != string(session.ID) {
+						t.Logf("Skipping mismatching session %v, expecting upload of %v.", event.SessionID, session.ID)
+						continue
+					}
+					break loop
+				case <-timeoutC:
+					dumpGoroutineProfile()
+					t.Fatalf("%s: Timeout waiting for upload of session %v to complete to %v",
+						tt.comment, session.ID, tt.auditSessionsURI)
+				}
+			}
 
-// 			// lets type "echo hi" followed by "enter" and then "exit" + "enter":
+			// read back the entire session (we have to try several times until we get back
+			// everything because the session is closing)
+			var sessionStream []byte
+			for i := 0; i < 6; i++ {
+				sessionStream, err = site.GetSessionChunk(apidefaults.Namespace, session.ID, 0, events.MaxChunkBytes)
+				require.NoError(t, err)
+				if strings.Contains(string(sessionStream), "exit") {
+					break
+				}
+				time.Sleep(time.Millisecond * 250)
+				if i >= 5 {
+					// session stream keeps coming back short
+					t.Fatalf("%s: Stream is not getting data: %q.", tt.comment, string(sessionStream))
+				}
+			}
 
-// 			myTerm.Type("\aecho hi\n\r\aexit\n\r\a")
+			// see what we got. It looks different based on bash settings, but here it is
+			// on Ev's machine (hostname is 'edsger'):
+			//
+			// edsger ~: echo hi
+			// hi
+			// edsger ~: exit
+			// logout
+			//
+			text := string(sessionStream)
+			require.Contains(t, text, "echo hi")
+			require.Contains(t, text, "exit")
 
-// 			// wait for session to end:
-// 			select {
-// 			case <-endC:
-// 			case <-time.After(10 * time.Second):
-// 				t.Fatalf("%s: Timeout waiting for session to finish.", tt.comment)
-// 			}
+			// Wait until session.start, session.leave, and session.end events have arrived.
+			getSessions := func(site auth.ClientI) ([]events.EventFields, error) {
+				tickCh := time.Tick(500 * time.Millisecond)
+				stopCh := time.After(10 * time.Second)
+				for {
+					select {
+					case <-tickCh:
+						// Get all session events from the backend.
+						sessionEvents, err := site.GetSessionEvents(apidefaults.Namespace, session.ID, 0, false)
+						if err != nil {
+							return nil, trace.Wrap(err)
+						}
 
-// 			// wait for the upload of the right session to complete
-// 			timeoutC := time.After(10 * time.Second)
-// 		loop:
-// 			for {
-// 				select {
-// 				case event := <-teleport.UploadEventsC:
-// 					if event.SessionID != string(session.ID) {
-// 						t.Logf("Skipping mismatching session %v, expecting upload of %v.", event.SessionID, session.ID)
-// 						continue
-// 					}
-// 					break loop
-// 				case <-timeoutC:
-// 					dumpGoroutineProfile()
-// 					t.Fatalf("%s: Timeout waiting for upload of session %v to complete to %v",
-// 						tt.comment, session.ID, tt.auditSessionsURI)
-// 				}
-// 			}
+						// Look through all session events for the three wanted.
+						var hasStart bool
+						var hasEnd bool
+						var hasLeave bool
+						for _, se := range sessionEvents {
+							if se.GetType() == events.SessionStartEvent {
+								hasStart = true
+							}
+							if se.GetType() == events.SessionEndEvent {
+								hasEnd = true
+							}
+							if se.GetType() == events.SessionLeaveEvent {
+								hasLeave = true
+							}
+						}
 
-// 			// read back the entire session (we have to try several times until we get back
-// 			// everything because the session is closing)
-// 			var sessionStream []byte
-// 			for i := 0; i < 6; i++ {
-// 				sessionStream, err = site.GetSessionChunk(apidefaults.Namespace, session.ID, 0, events.MaxChunkBytes)
-// 				require.NoError(t, err)
-// 				if strings.Contains(string(sessionStream), "exit") {
-// 					break
-// 				}
-// 				time.Sleep(time.Millisecond * 250)
-// 				if i >= 5 {
-// 					// session stream keeps coming back short
-// 					t.Fatalf("%s: Stream is not getting data: %q.", tt.comment, string(sessionStream))
-// 				}
-// 			}
+						// Make sure all three events were found.
+						if hasStart && hasEnd && hasLeave {
+							return sessionEvents, nil
+						}
+					case <-stopCh:
+						return nil, trace.BadParameter("unable to find all session events after 10s (mode=%v)", tt.inRecordLocation)
+					}
+				}
+			}
+			history, err := getSessions(site)
+			require.NoError(t, err)
 
-// 			// see what we got. It looks different based on bash settings, but here it is
-// 			// on Ev's machine (hostname is 'edsger'):
-// 			//
-// 			// edsger ~: echo hi
-// 			// hi
-// 			// edsger ~: exit
-// 			// logout
-// 			//
-// 			text := string(sessionStream)
-// 			require.Contains(t, text, "echo hi")
-// 			require.Contains(t, text, "exit")
+			getChunk := func(e events.EventFields, maxlen int) string {
+				offset := e.GetInt("offset")
+				length := e.GetInt("bytes")
+				if length == 0 {
+					return ""
+				}
+				if length > maxlen {
+					length = maxlen
+				}
+				return string(sessionStream[offset : offset+length])
+			}
 
-// 			// Wait until session.start, session.leave, and session.end events have arrived.
-// 			getSessions := func(site auth.ClientI) ([]events.EventFields, error) {
-// 				tickCh := time.Tick(500 * time.Millisecond)
-// 				stopCh := time.After(10 * time.Second)
-// 				for {
-// 					select {
-// 					case <-tickCh:
-// 						// Get all session events from the backend.
-// 						sessionEvents, err := site.GetSessionEvents(apidefaults.Namespace, session.ID, 0, false)
-// 						if err != nil {
-// 							return nil, trace.Wrap(err)
-// 						}
+			findByType := func(et string) events.EventFields {
+				for _, e := range history {
+					if e.GetType() == et {
+						return e
+					}
+				}
+				return nil
+			}
 
-// 						// Look through all session events for the three wanted.
-// 						var hasStart bool
-// 						var hasEnd bool
-// 						var hasLeave bool
-// 						for _, se := range sessionEvents {
-// 							if se.GetType() == events.SessionStartEvent {
-// 								hasStart = true
-// 							}
-// 							if se.GetType() == events.SessionEndEvent {
-// 								hasEnd = true
-// 							}
-// 							if se.GetType() == events.SessionLeaveEvent {
-// 								hasLeave = true
-// 							}
-// 						}
+			// there should always be 'session.start' event (and it must be first)
+			first := history[0]
+			start := findByType(events.SessionStartEvent)
+			require.Equal(t, first, start)
+			require.Equal(t, 0, start.GetInt("bytes"))
+			require.Equal(t, string(sessionID), start.GetString(events.SessionEventID))
+			require.NotEmpty(t, start.GetString(events.TerminalSize))
 
-// 						// Make sure all three events were found.
-// 						if hasStart && hasEnd && hasLeave {
-// 							return sessionEvents, nil
-// 						}
-// 					case <-stopCh:
-// 						return nil, trace.BadParameter("unable to find all session events after 10s (mode=%v)", tt.inRecordLocation)
-// 					}
-// 				}
-// 			}
-// 			history, err := getSessions(site)
-// 			require.NoError(t, err)
+			// If session are being recorded at nodes, the SessionServerID should contain
+			// the ID of the node. If sessions are being recorded at the proxy, then
+			// SessionServerID should be that of the proxy.
+			expectedServerID := nodeProcess.Config.HostUUID
+			if services.IsRecordAtProxy(tt.inRecordLocation) {
+				expectedServerID = teleport.Process.Config.HostUUID
+			}
+			require.Equal(t, expectedServerID, start.GetString(events.SessionServerID))
 
-// 			getChunk := func(e events.EventFields, maxlen int) string {
-// 				offset := e.GetInt("offset")
-// 				length := e.GetInt("bytes")
-// 				if length == 0 {
-// 					return ""
-// 				}
-// 				if length > maxlen {
-// 					length = maxlen
-// 				}
-// 				return string(sessionStream[offset : offset+length])
-// 			}
+			// make sure data is recorded properly
+			out := &bytes.Buffer{}
+			for _, e := range history {
+				out.WriteString(getChunk(e, 1000))
+			}
+			recorded := replaceNewlines(out.String())
+			require.Regexp(t, ".*exit.*", recorded)
+			require.Regexp(t, ".*echo hi.*", recorded)
 
-// 			findByType := func(et string) events.EventFields {
-// 				for _, e := range history {
-// 					if e.GetType() == et {
-// 						return e
-// 					}
-// 				}
-// 				return nil
-// 			}
+			// there should always be 'session.end' event
+			end := findByType(events.SessionEndEvent)
+			require.NotNil(t, end)
+			require.Equal(t, 0, end.GetInt("bytes"))
+			require.Equal(t, string(sessionID), end.GetString(events.SessionEventID))
 
-// 			// there should always be 'session.start' event (and it must be first)
-// 			first := history[0]
-// 			start := findByType(events.SessionStartEvent)
-// 			require.Equal(t, first, start)
-// 			require.Equal(t, 0, start.GetInt("bytes"))
-// 			require.Equal(t, string(sessionID), start.GetString(events.SessionEventID))
-// 			require.NotEmpty(t, start.GetString(events.TerminalSize))
+			// there should always be 'session.leave' event
+			leave := findByType(events.SessionLeaveEvent)
+			require.NotNil(t, leave)
+			require.Equal(t, 0, leave.GetInt("bytes"))
+			require.Equal(t, string(sessionID), leave.GetString(events.SessionEventID))
 
-// 			// If session are being recorded at nodes, the SessionServerID should contain
-// 			// the ID of the node. If sessions are being recorded at the proxy, then
-// 			// SessionServerID should be that of the proxy.
-// 			expectedServerID := nodeProcess.Config.HostUUID
-// 			if services.IsRecordAtProxy(tt.inRecordLocation) {
-// 				expectedServerID = teleport.Process.Config.HostUUID
-// 			}
-// 			require.Equal(t, expectedServerID, start.GetString(events.SessionServerID))
-
-// 			// make sure data is recorded properly
-// 			out := &bytes.Buffer{}
-// 			for _, e := range history {
-// 				out.WriteString(getChunk(e, 1000))
-// 			}
-// 			recorded := replaceNewlines(out.String())
-// 			require.Regexp(t, ".*exit.*", recorded)
-// 			require.Regexp(t, ".*echo hi.*", recorded)
-
-// 			// there should always be 'session.end' event
-// 			end := findByType(events.SessionEndEvent)
-// 			require.NotNil(t, end)
-// 			require.Equal(t, 0, end.GetInt("bytes"))
-// 			require.Equal(t, string(sessionID), end.GetString(events.SessionEventID))
-
-// 			// there should always be 'session.leave' event
-// 			leave := findByType(events.SessionLeaveEvent)
-// 			require.NotNil(t, leave)
-// 			require.Equal(t, 0, leave.GetInt("bytes"))
-// 			require.Equal(t, string(sessionID), leave.GetString(events.SessionEventID))
-
-// 			// all of them should have a proper time
-// 			for _, e := range history {
-// 				require.False(t, e.GetTime("time").IsZero())
-// 			}
-// 		})
-// 	}
-// }
+			// all of them should have a proper time
+			for _, e := range history {
+				require.False(t, e.GetTime("time").IsZero())
+			}
+		})
+	}
+}
 
 // // testInteroperability checks if Teleport and OpenSSH behave in the same way
 // // when executing commands.
@@ -569,23 +576,6 @@ func TestIntegrations(t *testing.T) {
 // 	}
 // }
 
-// // TestMain will re-execute Teleport to run a command if "exec" is passed to
-// // it as an argument. Otherwise, it will run tests as normal.
-// func TestMain(m *testing.M) {
-// 	utils.InitLoggerForTests()
-// 	helpers.SetTestTimeouts(100 * time.Millisecond)
-// 	// If the test is re-executing itself, execute the command that comes over
-// 	// the pipe.
-// 	if srv.IsReexec() {
-// 		srv.RunAndExit(os.Args[1])
-// 		return
-// 	}
-
-// 	// Otherwise run tests as normal.
-// 	code := m.Run()
-// 	os.Exit(code)
-// }
-
 // // newUnstartedTeleport helper returns a created but not started Teleport instance pre-configured
 // // with the current user os.user.Current().
 // func (s *integrationTestSuite) newUnstartedTeleport(t *testing.T, logins []string, enableSSH bool) *helpers.TeleInstance {
@@ -653,9 +643,9 @@ func TestIntegrations(t *testing.T) {
 // 	return main
 // }
 
-// func replaceNewlines(in string) string {
-// 	return regexp.MustCompile(`\r?\n`).ReplaceAllString(in, `\n`)
-// }
+func replaceNewlines(in string) string {
+	return regexp.MustCompile(`\r?\n`).ReplaceAllString(in, `\n`)
+}
 
 // // TestUUIDBasedProxy verifies that attempts to proxy to nodes using ambiguous
 // // hostnames fails with the correct error, and that proxying by UUID succeeds.
@@ -3585,7 +3575,6 @@ func testAuditOff(t *testing.T, suite *integrationTestSuite) {
 		require.NoError(t, err)
 		cl.Stdout = myTerm
 		cl.Stdin = myTerm
-		suite.Log.Info("Establishing SSH connection")
 		err = cl.SSH(context.TODO(), []string{}, false)
 		endCh <- err
 	}()
@@ -3607,10 +3596,9 @@ func testAuditOff(t *testing.T, suite *integrationTestSuite) {
 	require.Equal(t, suite.Me.Username, session.Parties[0].User)
 
 	// lets type "echo hi" followed by "enter" and then "exit" + "enter":
-	suite.Log.Info("Connected. Sending exit!")
 	myTerm.Type("\aecho hi\n\r\aexit\n\r\a")
 
-	suite.Log.Info("Waiting for session to report closure")
+	// wait for session to end
 	select {
 	case <-time.After(1 * time.Minute):
 		t.Fatalf("Timed out waiting for session to end.")
@@ -4944,111 +4932,111 @@ func testAuditOff(t *testing.T, suite *integrationTestSuite) {
 // 	}
 // }
 
-// func testBPFExec(t *testing.T, suite *integrationTestSuite) {
-// 	tr := utils.NewTracer(utils.ThisFunction()).Start()
-// 	defer tr.Stop()
+func testBPFExec(t *testing.T, suite *integrationTestSuite) {
+	tr := utils.NewTracer(utils.ThisFunction()).Start()
+	defer tr.Stop()
 
-// 	// Check if BPF tests can be run on this host.
-// 	err := canTestBPF()
-// 	if err != nil {
-// 		t.Skipf("Tests for BPF functionality can not be run: %v.", err)
-// 		return
-// 	}
+	// Check if BPF tests can be run on this host.
+	err := canTestBPF()
+	if err != nil {
+		t.Skipf("Tests for BPF functionality can not be run: %v.", err)
+		return
+	}
 
-// 	lsPath, err := exec.LookPath("ls")
-// 	require.NoError(t, err)
+	lsPath, err := exec.LookPath("ls")
+	require.NoError(t, err)
 
-// 	tests := []struct {
-// 		desc               string
-// 		inSessionRecording string
-// 		inBPFEnabled       bool
-// 		outFound           bool
-// 	}{
-// 		// For session recorded at the node, enhanced events should be found.
-// 		{
-// 			desc:               "Enabled and recorded at node",
-// 			inSessionRecording: types.RecordAtNode,
-// 			inBPFEnabled:       true,
-// 			outFound:           true,
-// 		},
-// 		// For session recorded at the node, but BPF is turned off, no events
-// 		// should be found.
-// 		{
-// 			desc:               "Disabled and recorded at node",
-// 			inSessionRecording: types.RecordAtNode,
-// 			inBPFEnabled:       false,
-// 			outFound:           false,
-// 		},
-// 		// For session recorded at the proxy, enhanced events should not be found.
-// 		// BPF turned off simulates an OpenSSH node.
-// 		{
-// 			desc:               "Disabled and recorded at proxy",
-// 			inSessionRecording: types.RecordAtProxy,
-// 			inBPFEnabled:       false,
-// 			outFound:           false,
-// 		},
-// 	}
-// 	for _, tt := range tests {
-// 		t.Run(tt.desc, func(t *testing.T) {
-// 			// Create temporary directory where cgroup2 hierarchy will be mounted.
-// 			dir := t.TempDir()
+	tests := []struct {
+		desc               string
+		inSessionRecording string
+		inBPFEnabled       bool
+		outFound           bool
+	}{
+		// For session recorded at the node, enhanced events should be found.
+		{
+			desc:               "Enabled and recorded at node",
+			inSessionRecording: types.RecordAtNode,
+			inBPFEnabled:       true,
+			outFound:           true,
+		},
+		// For session recorded at the node, but BPF is turned off, no events
+		// should be found.
+		{
+			desc:               "Disabled and recorded at node",
+			inSessionRecording: types.RecordAtNode,
+			inBPFEnabled:       false,
+			outFound:           false,
+		},
+		// For session recorded at the proxy, enhanced events should not be found.
+		// BPF turned off simulates an OpenSSH node.
+		{
+			desc:               "Disabled and recorded at proxy",
+			inSessionRecording: types.RecordAtProxy,
+			inBPFEnabled:       false,
+			outFound:           false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			// Create temporary directory where cgroup2 hierarchy will be mounted.
+			dir := t.TempDir()
 
-// 			// Create and start a Teleport cluster.
-// 			makeConfig := func() (*testing.T, []string, []*helpers.InstanceSecrets, *service.Config) {
-// 				recConfig, err := types.NewSessionRecordingConfigFromConfigFile(types.SessionRecordingConfigSpecV2{
-// 					Mode: tt.inSessionRecording,
-// 				})
-// 				require.NoError(t, err)
+			// Create and start a Teleport cluster.
+			makeConfig := func() (*testing.T, []string, []*helpers.InstanceSecrets, *service.Config) {
+				recConfig, err := types.NewSessionRecordingConfigFromConfigFile(types.SessionRecordingConfigSpecV2{
+					Mode: tt.inSessionRecording,
+				})
+				require.NoError(t, err)
 
-// 				// Create default config.
-// 				tconf := suite.defaultServiceConfig()
+				// Create default config.
+				tconf := suite.defaultServiceConfig()
 
-// 				// Configure Auth.
-// 				tconf.Auth.Preference.SetSecondFactor("off")
-// 				tconf.Auth.Enabled = true
-// 				tconf.Auth.SessionRecordingConfig = recConfig
+				// Configure Auth.
+				tconf.Auth.Preference.SetSecondFactor("off")
+				tconf.Auth.Enabled = true
+				tconf.Auth.SessionRecordingConfig = recConfig
 
-// 				// Configure Proxy.
-// 				tconf.Proxy.Enabled = true
-// 				tconf.Proxy.DisableWebService = false
-// 				tconf.Proxy.DisableWebInterface = true
+				// Configure Proxy.
+				tconf.Proxy.Enabled = true
+				tconf.Proxy.DisableWebService = false
+				tconf.Proxy.DisableWebInterface = true
 
-// 				// Configure Node. If session are being recorded at the proxy, don't enable
-// 				// BPF to simulate an OpenSSH node.
-// 				tconf.SSH.Enabled = true
-// 				if tt.inBPFEnabled {
-// 					tconf.SSH.BPF.Enabled = true
-// 					tconf.SSH.BPF.CgroupPath = dir
-// 				}
-// 				return t, nil, nil, tconf
-// 			}
-// 			main := suite.NewTeleportWithConfig(makeConfig())
-// 			defer main.StopAll()
+				// Configure Node. If session are being recorded at the proxy, don't enable
+				// BPF to simulate an OpenSSH node.
+				tconf.SSH.Enabled = true
+				if tt.inBPFEnabled {
+					tconf.SSH.BPF.Enabled = true
+					tconf.SSH.BPF.CgroupPath = dir
+				}
+				return t, nil, nil, tconf
+			}
+			main := suite.NewTeleportWithConfig(makeConfig())
+			defer main.StopAll()
 
-// 			// Create a client to the above Teleport cluster.
-// 			clientConfig := helpers.ClientConfig{
-// 				Login:   suite.Me.Username,
-// 				Cluster: helpers.Site,
-// 				Host:    Host,
-// 				Port:    main.GetPortSSHInt(),
-// 			}
+			// Create a client to the above Teleport cluster.
+			clientConfig := helpers.ClientConfig{
+				Login:   suite.Me.Username,
+				Cluster: helpers.Site,
+				Host:    Host,
+				Port:    helpers.Port(t, main.SSH),
+			}
 
-// 			// Run exec command.
-// 			_, err = runCommand(t, main, []string{lsPath}, clientConfig, 1)
-// 			require.NoError(t, err)
+			// Run exec command.
+			_, err = runCommand(t, main, []string{lsPath}, clientConfig, 1)
+			require.NoError(t, err)
 
-// 			// Enhanced events should show up for session recorded at the node but not
-// 			// at the proxy.
-// 			if tt.outFound {
-// 				_, err = findCommandEventInLog(main, events.SessionCommandEvent, lsPath)
-// 				require.NoError(t, err)
-// 			} else {
-// 				_, err = findCommandEventInLog(main, events.SessionCommandEvent, lsPath)
-// 				require.Error(t, err)
-// 			}
-// 		})
-// 	}
-// }
+			// Enhanced events should show up for session recorded at the node but not
+			// at the proxy.
+			if tt.outFound {
+				_, err = findCommandEventInLog(main, events.SessionCommandEvent, lsPath)
+				require.NoError(t, err)
+			} else {
+				_, err = findCommandEventInLog(main, events.SessionCommandEvent, lsPath)
+				require.Error(t, err)
+			}
+		})
+	}
+}
 
 // func testSSHExitCode(t *testing.T, suite *integrationTestSuite) {
 // 	lsPath, err := exec.LookPath("ls")
@@ -5523,59 +5511,59 @@ func testAuditOff(t *testing.T, suite *integrationTestSuite) {
 // 	return nil, trace.NotFound("event not found")
 // }
 
-// // findCommandEventInLog polls the event log looking for an event of a particular type.
-// func findCommandEventInLog(t *helpers.TeleInstance, eventName string, programName string) (events.EventFields, error) {
-// 	for i := 0; i < 10; i++ {
-// 		eventFields, err := eventsInLog(t.Config.DataDir+"/log/events.log", eventName)
-// 		if err != nil {
-// 			time.Sleep(1 * time.Second)
-// 			continue
-// 		}
+// findCommandEventInLog polls the event log looking for an event of a particular type.
+func findCommandEventInLog(t *helpers.TeleInstance, eventName string, programName string) (events.EventFields, error) {
+	for i := 0; i < 10; i++ {
+		eventFields, err := eventsInLog(t.Config.DataDir+"/log/events.log", eventName)
+		if err != nil {
+			time.Sleep(1 * time.Second)
+			continue
+		}
 
-// 		for _, fields := range eventFields {
-// 			eventType, ok := fields[events.EventType]
-// 			if !ok {
-// 				continue
-// 			}
-// 			eventPath, ok := fields[events.Path]
-// 			if !ok {
-// 				continue
-// 			}
-// 			if eventType == eventName && eventPath == programName {
-// 				return fields, nil
-// 			}
-// 		}
+		for _, fields := range eventFields {
+			eventType, ok := fields[events.EventType]
+			if !ok {
+				continue
+			}
+			eventPath, ok := fields[events.Path]
+			if !ok {
+				continue
+			}
+			if eventType == eventName && eventPath == programName {
+				return fields, nil
+			}
+		}
 
-// 		time.Sleep(1 * time.Second)
-// 	}
-// 	return nil, trace.NotFound("event not found")
-// }
+		time.Sleep(1 * time.Second)
+	}
+	return nil, trace.NotFound("event not found")
+}
 
-// // eventsInLog returns all events in a log file.
-// func eventsInLog(path string, eventName string) ([]events.EventFields, error) {
-// 	var ret []events.EventFields
+// eventsInLog returns all events in a log file.
+func eventsInLog(path string, eventName string) ([]events.EventFields, error) {
+	var ret []events.EventFields
 
-// 	file, err := os.Open(path)
-// 	if err != nil {
-// 		return nil, trace.Wrap(err)
-// 	}
-// 	defer file.Close()
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	defer file.Close()
 
-// 	scanner := bufio.NewScanner(file)
-// 	for scanner.Scan() {
-// 		var fields events.EventFields
-// 		err = json.Unmarshal(scanner.Bytes(), &fields)
-// 		if err != nil {
-// 			return nil, trace.Wrap(err)
-// 		}
-// 		ret = append(ret, fields)
-// 	}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var fields events.EventFields
+		err = json.Unmarshal(scanner.Bytes(), &fields)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		ret = append(ret, fields)
+	}
 
-// 	if len(ret) == 0 {
-// 		return nil, trace.NotFound("event not found")
-// 	}
-// 	return ret, nil
-// }
+	if len(ret) == 0 {
+		return nil, trace.NotFound("event not found")
+	}
+	return ret, nil
+}
 
 // // runCommandWithCertReissue runs an SSH command and generates certificates for the user
 // func runCommandWithCertReissue(t *testing.T, instance *helpers.TeleInstance, cmd []string, reissueParams client.ReissueParams, cachePolicy client.CertCachePolicy, cfg helpers.ClientConfig) error {
@@ -5599,40 +5587,40 @@ func testAuditOff(t *testing.T, suite *integrationTestSuite) {
 // 	return nil
 // }
 
-// // runCommand is a shortcut for running SSH command, it creates a client
-// // connected to proxy of the passed in instance, runs the command, and returns
-// // the result. If multiple attempts are requested, a 250 millisecond delay is
-// // added between them before giving up.
-// func runCommand(t *testing.T, instance *helpers.TeleInstance, cmd []string, cfg helpers.ClientConfig, attempts int) (string, error) {
-// 	tc, err := instance.NewClient(cfg)
-// 	if err != nil {
-// 		return "", trace.Wrap(err)
-// 	}
-// 	// since this helper is sometimes used for running commands on
-// 	// multiple nodes concurrently, we use io.Pipe to protect our
-// 	// output buffer from concurrent writes.
-// 	read, write := io.Pipe()
-// 	output := &bytes.Buffer{}
-// 	doneC := make(chan struct{})
-// 	go func() {
-// 		io.Copy(output, read)
-// 		close(doneC)
-// 	}()
-// 	tc.Stdout = write
-// 	for i := 0; i < attempts; i++ {
-// 		err = tc.SSH(context.TODO(), cmd, false)
-// 		if err == nil {
-// 			break
-// 		}
-// 		time.Sleep(1 * time.Second)
-// 	}
-// 	write.Close()
-// 	if err != nil {
-// 		return "", trace.Wrap(err)
-// 	}
-// 	<-doneC
-// 	return output.String(), nil
-// }
+// runCommand is a shortcut for running SSH command, it creates a client
+// connected to proxy of the passed in instance, runs the command, and returns
+// the result. If multiple attempts are requested, a 250 millisecond delay is
+// added between them before giving up.
+func runCommand(t *testing.T, instance *helpers.TeleInstance, cmd []string, cfg helpers.ClientConfig, attempts int) (string, error) {
+	tc, err := instance.NewClient(cfg)
+	if err != nil {
+		return "", trace.Wrap(err)
+	}
+	// since this helper is sometimes used for running commands on
+	// multiple nodes concurrently, we use io.Pipe to protect our
+	// output buffer from concurrent writes.
+	read, write := io.Pipe()
+	output := &bytes.Buffer{}
+	doneC := make(chan struct{})
+	go func() {
+		io.Copy(output, read)
+		close(doneC)
+	}()
+	tc.Stdout = write
+	for i := 0; i < attempts; i++ {
+		err = tc.SSH(context.TODO(), cmd, false)
+		if err == nil {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+	write.Close()
+	if err != nil {
+		return "", trace.Wrap(err)
+	}
+	<-doneC
+	return output.String(), nil
+}
 
 // type InstanceConfigOption func(config *helpers.InstanceConfig)
 
@@ -5708,29 +5696,29 @@ func (s *integrationTestSuite) defaultServiceConfig() *service.Config {
 // 	return true
 // }
 
-// // isRoot returns a boolean if the test is being run as root or not.
-// func isRoot() bool {
-// 	return os.Geteuid() == 0
-// }
+// isRoot returns a boolean if the test is being run as root or not.
+func isRoot() bool {
+	return os.Geteuid() == 0
+}
 
-// // canTestBPF runs checks to determine whether BPF tests will run or not.
-// // Tests for this package must be run as root.
-// func canTestBPF() error {
-// 	if !isRoot() {
-// 		return trace.BadParameter("not root")
-// 	}
+// canTestBPF runs checks to determine whether BPF tests will run or not.
+// Tests for this package must be run as root.
+func canTestBPF() error {
+	if !isRoot() {
+		return trace.BadParameter("not root")
+	}
 
-// 	err := bpf.IsHostCompatible()
-// 	if err != nil {
-// 		return trace.Wrap(err)
-// 	}
+	err := bpf.IsHostCompatible()
+	if err != nil {
+		return trace.Wrap(err)
+	}
 
-// 	return nil
-// }
+	return nil
+}
 
-// func dumpGoroutineProfile() {
-// 	pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
-// }
+func dumpGoroutineProfile() {
+	pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
+}
 
 // // TestWebProxyInsecure makes sure that proxy endpoint works when TLS is disabled.
 // func TestWebProxyInsecure(t *testing.T) {
