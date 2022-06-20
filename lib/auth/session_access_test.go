@@ -252,7 +252,7 @@ func successSameUserJoinTestCase(t *testing.T) joinTestCase {
 	require.NoError(t, err)
 
 	return joinTestCase{
-		name:        "success",
+		name:        "successSameUser",
 		host:        hostRole,
 		sessionKind: types.SSHSessionKind,
 		participant: SessionAccessContext{
