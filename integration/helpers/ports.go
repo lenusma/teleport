@@ -66,19 +66,6 @@ import (
 // 	return strconv.Itoa(int(*p))
 // }
 
-// func SingleProxyPortSetup() *InstancePorts {
-// 	v := NewInstancePort()
-// 	return &InstancePorts{
-// 		Web:               v,
-// 		SSHProxy:          v,
-// 		ReverseTunnel:     v,
-// 		MySQL:             v,
-// 		SSH:               NewInstancePort(),
-// 		Auth:              NewInstancePort(),
-// 		isSinglePortSetup: true,
-// 	}
-// }
-
 type InstanceListeners struct {
 	Web               string
 	SSH               string
@@ -99,6 +86,19 @@ func StandardListenerSetup(t *testing.T, fds *[]service.FileDescriptor) *Instanc
 		SSHProxy:      NewListener(t, service.ListenerProxySSH, fds),
 		ReverseTunnel: NewListener(t, service.ListenerProxyTunnel, fds),
 		MySQL:         NewListener(t, service.ListenerProxyMySQL, fds),
+	}
+}
+
+func SingleProxyPortSetup(t *testing.T, fds *[]service.FileDescriptor) *InstanceListeners {
+	ssh := NewListener(t, service.ListenerProxyWeb, fds)
+	return &InstanceListeners{
+		Web:               ssh,
+		SSH:               NewListener(t, service.ListenerNodeSSH, fds),
+		Auth:              NewListener(t, service.ListenerAuthSSH, fds),
+		SSHProxy:          ssh,
+		ReverseTunnel:     ssh,
+		MySQL:             ssh,
+		IsSinglePortSetup: true,
 	}
 }
 
@@ -269,3 +269,13 @@ func NewListener(t *testing.T, ty service.ListenerType, fds *[]service.FileDescr
 
 	return addr
 }
+
+// func DuplicateListener(t *testing.T, addr string, ty service.ListenerType, fds *[]service.FileDescriptor) {
+// 	for
+
+// 	*fds = append(*fds, service.FileDescriptor{
+// 		Type:    string(ty),
+// 		Address: addr,
+// 		File:    lf,
+// 	})
+// }

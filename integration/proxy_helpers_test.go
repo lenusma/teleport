@@ -16,6 +16,22 @@ limitations under the License.
 
 package integration
 
+import (
+	"context"
+	"os/user"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/gravitational/teleport/api/constants"
+	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/integration/helpers"
+	"github.com/gravitational/teleport/lib/auth"
+	libclient "github.com/gravitational/teleport/lib/client"
+	"github.com/gravitational/teleport/lib/client/identityfile"
+	"github.com/stretchr/testify/require"
+)
+
 // import (
 // 	"bytes"
 // 	"context"
@@ -397,11 +413,11 @@ package integration
 // 	}
 // }
 
-// func mustGetCurrentUser(t *testing.T) *user.User {
-// 	user, err := user.Current()
-// 	require.NoError(t, err)
-// 	return user
-// }
+func mustGetCurrentUser(t *testing.T) *user.User {
+	user, err := user.Current()
+	require.NoError(t, err)
+	return user
+}
 
 // func mustRunPostgresQuery(t *testing.T, client *pgconn.PgConn) {
 // 	result, err := client.Exec(context.Background(), "select 1").ReadAll()
@@ -517,31 +533,31 @@ package integration
 // 	return nodeConfig
 // }
 
-// func mustCreateUserIdentityFile(t *testing.T, tc *helpers.TeleInstance, username string, ttl time.Duration) string {
-// 	key, err := libclient.NewKey()
-// 	require.NoError(t, err)
-// 	key.ClusterName = tc.Secrets.SiteName
+func mustCreateUserIdentityFile(t *testing.T, tc *helpers.TeleInstance, username string, ttl time.Duration) string {
+	key, err := libclient.NewKey()
+	require.NoError(t, err)
+	key.ClusterName = tc.Secrets.SiteName
 
-// 	sshCert, tlsCert, err := tc.Process.GetAuthServer().GenerateUserTestCerts(
-// 		key.Pub, username, ttl,
-// 		constants.CertificateFormatStandard,
-// 		tc.Secrets.SiteName, "",
-// 	)
-// 	require.NoError(t, err)
+	sshCert, tlsCert, err := tc.Process.GetAuthServer().GenerateUserTestCerts(
+		key.Pub, username, ttl,
+		constants.CertificateFormatStandard,
+		tc.Secrets.SiteName, "",
+	)
+	require.NoError(t, err)
 
-// 	key.Cert = sshCert
-// 	key.TLSCert = tlsCert
+	key.Cert = sshCert
+	key.TLSCert = tlsCert
 
-// 	hostCAs, err := tc.Process.GetAuthServer().GetCertAuthorities(context.Background(), types.HostCA, false)
-// 	require.NoError(t, err)
-// 	key.TrustedCA = auth.AuthoritiesToTrustedCerts(hostCAs)
+	hostCAs, err := tc.Process.GetAuthServer().GetCertAuthorities(context.Background(), types.HostCA, false)
+	require.NoError(t, err)
+	key.TrustedCA = auth.AuthoritiesToTrustedCerts(hostCAs)
 
-// 	idPath := filepath.Join(t.TempDir(), "user_identity")
-// 	_, err = identityfile.Write(identityfile.WriteConfig{
-// 		OutputPath: idPath,
-// 		Key:        key,
-// 		Format:     identityfile.FormatFile,
-// 	})
-// 	require.NoError(t, err)
-// 	return idPath
-// }
+	idPath := filepath.Join(t.TempDir(), "user_identity")
+	_, err = identityfile.Write(identityfile.WriteConfig{
+		OutputPath: idPath,
+		Key:        key,
+		Format:     identityfile.FormatFile,
+	})
+	require.NoError(t, err)
+	return idPath
+}
