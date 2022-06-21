@@ -21,7 +21,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"net"
 	"time"
 
 	"github.com/gravitational/teleport/api/client/proto"
@@ -41,11 +40,8 @@ type TestServerConfig struct {
 	AuthClient auth.ClientI
 	// Name is the server name for identification purposes.
 	Name string
-
-	// Listener is an optional listener that can be used to customise the
-	// test server's listening behaviour
-	Listener net.Listener
-
+	// Address is an optional server listen address.
+	Address string
 	// AuthUser is used in tests simulating IAM token authentication.
 	AuthUser string
 	// AuthToken is used in tests simulating IAM token authentication.

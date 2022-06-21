@@ -17,39 +17,41 @@ limitations under the License.
 package helpers
 
 import (
+	"fmt"
 	"net"
 	"strconv"
 	"testing"
 
 	"github.com/gravitational/teleport/lib/service"
+	"github.com/gravitational/teleport/lib/utils"
 	"github.com/stretchr/testify/require"
 )
 
 // ports contains tcp ports allocated for all integration tests.
 // TODO: Replace all usage of `Ports` with FD-injected sockets as per
 //       https://github.com/gravitational/teleport/pull/13346
-//var ports utils.PortList
+var ports utils.PortList
 
-// func init() {
-// 	// Allocate tcp ports for all integration tests. 5000 should be plenty.
-// 	var err error
-// 	ports, err = utils.GetFreeTCPPorts(5000, utils.PortStartingNumber)
-// 	if err != nil {
-// 		panic(fmt.Sprintf("failed to allocate tcp ports for tests: %v", err))
-// 	}
-// }
+func init() {
+	// Allocate tcp ports for all integration tests. 5000 should be plenty.
+	var err error
+	ports, err = utils.GetFreeTCPPorts(5000, utils.PortStartingNumber)
+	if err != nil {
+		panic(fmt.Sprintf("failed to allocate tcp ports for tests: %v", err))
+	}
+}
 
-// func NewPortValue() int {
-// 	return ports.PopInt()
-// }
+func NewPortValue() int {
+	return ports.PopInt()
+}
 
-// func NewPortStr() string {
-// 	return ports.Pop()
-// }
+func NewPortStr() string {
+	return ports.Pop()
+}
 
-// func NewPortSlice(n int) []int {
-// 	return ports.PopIntSlice(n)
-// }
+func NewPortSlice(n int) []int {
+	return ports.PopIntSlice(n)
+}
 
 // func NewInstancePort() *InstancePort {
 // 	i := ports.PopInt()

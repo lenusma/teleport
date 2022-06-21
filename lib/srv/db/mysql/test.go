@@ -83,25 +83,23 @@ func WithServerVersion(serverVersion string) TestServerOption {
 
 // NewTestServer returns a new instance of a test MySQL server.
 func NewTestServer(config common.TestServerConfig, opts ...TestServerOption) (*TestServer, error) {
+	address := "localhost:0"
+	if config.Address != "" {
+		address = config.Address
+	}
 	tlsConfig, err := common.MakeTestServerTLSConfig(config)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
-	// Create a default listener if none is supplied
-	listener := config.Listener
-	if listener == nil {
-		listener, err = net.Listen("tcp", "localhost:0")
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-	}
-
-	// If we want to serve TLS, then we wrap the supplied listener
+	var listener net.Listener
 	if config.ListenTLS {
-		listener = tls.NewListener(listener, tlsConfig)
+		listener, err = tls.Listen("tcp", address, tlsConfig)
+	} else {
+		listener, err = net.Listen("tcp", address)
 	}
-
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
 	_, port, err := net.SplitHostPort(listener.Addr().String())
 	if err != nil {
 		return nil, trace.Wrap(err)

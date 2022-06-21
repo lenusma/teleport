@@ -89,22 +89,15 @@ func TestServerWireVersion(wireVersion int) TestServerOption {
 }
 
 // NewTestServer returns a new instance of a test MongoDB server.
-func NewTestServer(config common.TestServerConfig, opts ...TestServerOption) (server *TestServer, err error) {
-	listener := config.Listener
-	if listener == nil {
-		listener, err = net.Listen("tcp", "localhost:0")
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-
-		// clean up the listener, but only if we're exiting with error
-		defer func() {
-			if err != nil {
-				listener.Close()
-			}
-		}()
+func NewTestServer(config common.TestServerConfig, opts ...TestServerOption) (*TestServer, error) {
+	address := "localhost:0"
+	if config.Address != "" {
+		address = config.Address
 	}
-
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
 	_, port, err := net.SplitHostPort(listener.Addr().String())
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -117,7 +110,7 @@ func NewTestServer(config common.TestServerConfig, opts ...TestServerOption) (se
 		trace.Component: defaults.ProtocolMongoDB,
 		"name":          config.Name,
 	})
-	server = &TestServer{
+	server := &TestServer{
 		cfg: config,
 		// MongoDB uses regular TLS handshake so standard TLS listener will work.
 		listener: tls.NewListener(listener, tlsConfig),
