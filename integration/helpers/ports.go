@@ -125,29 +125,29 @@ func SingleProxyPortSetup(t *testing.T, fds *[]service.FileDescriptor) *Instance
 // 	}
 // }
 
-// func SeparatePostgresPortSetup() *InstancePorts {
-// 	return &InstancePorts{
-// 		Web:           NewInstancePort(),
-// 		SSH:           NewInstancePort(),
-// 		Auth:          NewInstancePort(),
-// 		SSHProxy:      NewInstancePort(),
-// 		ReverseTunnel: NewInstancePort(),
-// 		MySQL:         NewInstancePort(),
-// 		Postgres:      NewInstancePort(),
-// 	}
-// }
+func SeparatePostgresPortSetup(t *testing.T, fds *[]service.FileDescriptor) *InstanceListeners {
+	return &InstanceListeners{
+		Web:           NewListener(t, service.ListenerProxyWeb, fds),
+		SSH:           NewListener(t, service.ListenerNodeSSH, fds),
+		Auth:          NewListener(t, service.ListenerAuthSSH, fds),
+		SSHProxy:      NewListener(t, service.ListenerProxySSH, fds),
+		ReverseTunnel: NewListener(t, service.ListenerProxyTunnel, fds),
+		MySQL:         NewListener(t, service.ListenerProxyMySQL, fds),
+		Postgres:      NewListener(t, service.ListenerProxyPostgres, fds),
+	}
+}
 
-// func SeparateMongoPortSetup() *InstancePorts {
-// 	return &InstancePorts{
-// 		Web:           NewInstancePort(),
-// 		SSH:           NewInstancePort(),
-// 		Auth:          NewInstancePort(),
-// 		SSHProxy:      NewInstancePort(),
-// 		ReverseTunnel: NewInstancePort(),
-// 		MySQL:         NewInstancePort(),
-// 		Mongo:         NewInstancePort(),
-// 	}
-// }
+func SeparateMongoPortSetup(t *testing.T, fds *[]service.FileDescriptor) *InstanceListeners {
+	return &InstanceListeners{
+		Web:           NewListener(t, service.ListenerProxyWeb, fds),
+		SSH:           NewListener(t, service.ListenerNodeSSH, fds),
+		Auth:          NewListener(t, service.ListenerAuthSSH, fds),
+		SSHProxy:      NewListener(t, service.ListenerProxySSH, fds),
+		ReverseTunnel: NewListener(t, service.ListenerProxyTunnel, fds),
+		MySQL:         NewListener(t, service.ListenerProxyMySQL, fds),
+		Mongo:         NewListener(t, service.ListenerProxyMongo, fds),
+	}
+}
 
 // type InstancePorts struct {
 // 	Host string

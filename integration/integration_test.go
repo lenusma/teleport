@@ -3155,22 +3155,22 @@ func replaceNewlines(in string) string {
 // 	)
 // }
 
-// // waitForProxyCount waits a set time for the proxy count in clusterName to
-// // reach some value.
-// func waitForProxyCount(t *helpers.TeleInstance, clusterName string, count int) error {
-// 	var counts map[string]int
-// 	start := time.Now()
-// 	for time.Since(start) < 17*time.Second {
-// 		counts = t.RemoteClusterWatcher.Counts()
-// 		if counts[clusterName] == count {
-// 			return nil
-// 		}
+// waitForProxyCount waits a set time for the proxy count in clusterName to
+// reach some value.
+func waitForProxyCount(t *helpers.TeleInstance, clusterName string, count int) error {
+	var counts map[string]int
+	start := time.Now()
+	for time.Since(start) < 17*time.Second {
+		counts = t.RemoteClusterWatcher.Counts()
+		if counts[clusterName] == count {
+			return nil
+		}
 
-// 		time.Sleep(500 * time.Millisecond)
-// 	}
+		time.Sleep(500 * time.Millisecond)
+	}
 
-// 	return trace.BadParameter("proxy count on %v: %v (wanted %v)", clusterName, counts[clusterName], count)
-// }
+	return trace.BadParameter("proxy count on %v: %v (wanted %v)", clusterName, counts[clusterName], count)
+}
 
 // // waitForNodeCount waits for a certain number of nodes to show up in the remote site.
 // func waitForNodeCount(ctx context.Context, t *helpers.TeleInstance, clusterName string, count int) error {

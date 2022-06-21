@@ -119,15 +119,15 @@ type TestServer struct {
 
 // NewTestServer returns a new instance of a test MSServer.
 func NewTestServer(config common.TestServerConfig) (*TestServer, error) {
-	address := "localhost:0"
-	if config.Address != "" {
-		address = config.Address
+	var err error
+	listener := config.Listener
+	if listener == nil {
+		listener, err = net.Listen("tcp", "localhost:0")
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
 	}
 
-	listener, err := net.Listen("tcp", address)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
 	_, port, err := net.SplitHostPort(listener.Addr().String())
 	if err != nil {
 		return nil, trace.Wrap(err)
