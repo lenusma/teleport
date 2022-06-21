@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -38,6 +39,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/bpf"
 	"github.com/gravitational/teleport/lib/events"
+	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/session"
@@ -1185,36 +1187,36 @@ func replaceNewlines(in string) string {
 // 	}
 // }
 
-// // errorVerifier is a function type for functions that check that a given
-// // error is what was expected. Implementations are expected top return nil
-// // if the supplied error is as expected, or an descriptive error if is is
-// // not
-// type errorVerifier func(error) error
+// errorVerifier is a function type for functions that check that a given
+// error is what was expected. Implementations are expected top return nil
+// if the supplied error is as expected, or an descriptive error if is is
+// not
+type errorVerifier func(error) error
 
-// func errorContains(text string) errorVerifier {
-// 	return func(err error) error {
-// 		if err == nil || !strings.Contains(err.Error(), text) {
-// 			return fmt.Errorf("Expected error to contain %q, got: %v", text, err)
-// 		}
-// 		return nil
-// 	}
-// }
+func errorContains(text string) errorVerifier {
+	return func(err error) error {
+		if err == nil || !strings.Contains(err.Error(), text) {
+			return fmt.Errorf("Expected error to contain %q, got: %v", text, err)
+		}
+		return nil
+	}
+}
 
-// type disconnectTestCase struct {
-// 	recordingMode     string
-// 	options           types.RoleOptions
-// 	disconnectTimeout time.Duration
-// 	concurrentConns   int
-// 	sessCtlTimeout    time.Duration
-// 	postFunc          func(context.Context, *testing.T, *helpers.TeleInstance)
+type disconnectTestCase struct {
+	recordingMode     string
+	options           types.RoleOptions
+	disconnectTimeout time.Duration
+	concurrentConns   int
+	sessCtlTimeout    time.Duration
+	postFunc          func(context.Context, *testing.T, *helpers.TeleInstance)
 
-// 	// verifyError checks if `err` reflects the error expected by the test scenario.
-// 	// It returns nil if yes, non-nil otherwise.
-// 	// It is important for verifyError to not do assertions using `*testing.T`
-// 	// itself, as those assertions must run in the main test goroutine, but
-// 	// verifyError runs in a different goroutine.
-// 	verifyError errorVerifier
-// }
+	// verifyError checks if `err` reflects the error expected by the test scenario.
+	// It returns nil if yes, non-nil otherwise.
+	// It is important for verifyError to not do assertions using `*testing.T`
+	// itself, as those assertions must run in the main test goroutine, but
+	// verifyError runs in a different goroutine.
+	verifyError errorVerifier
+}
 
 // // TestDisconnectScenarios tests multiple scenarios with client disconnects
 // func testDisconnectScenarios(t *testing.T, suite *integrationTestSuite) {
@@ -1439,32 +1441,32 @@ func replaceNewlines(in string) string {
 // 	return time.Now().Format(time.StampMilli)
 // }
 
-// // enterInput simulates entering user input into a terminal and awaiting a
-// // response. Returns an error if the given response text doesn't match
-// // the supplied regexp string.
-// func enterInput(ctx context.Context, person *Terminal, command, pattern string) error {
-// 	person.Type(command)
-// 	abortTime := time.Now().Add(10 * time.Second)
-// 	var matched bool
-// 	var output string
-// 	for {
-// 		output = replaceNewlines(person.Output(1000))
-// 		matched, _ = regexp.MatchString(pattern, output)
-// 		if matched {
-// 			return nil
-// 		}
-// 		select {
-// 		case <-time.After(time.Millisecond * 50):
-// 		case <-ctx.Done():
-// 			// cancellation means that we don't care about the input being
-// 			// confirmed anymore; not equivalent to a timeout.
-// 			return nil
-// 		}
-// 		if time.Now().After(abortTime) {
-// 			return fmt.Errorf("failed to capture pattern %q in %q", pattern, output)
-// 		}
-// 	}
-// }
+// enterInput simulates entering user input into a terminal and awaiting a
+// response. Returns an error if the given response text doesn't match
+// the supplied regexp string.
+func enterInput(ctx context.Context, person *Terminal, command, pattern string) error {
+	person.Type(command)
+	abortTime := time.Now().Add(10 * time.Second)
+	var matched bool
+	var output string
+	for {
+		output = replaceNewlines(person.Output(1000))
+		matched, _ = regexp.MatchString(pattern, output)
+		if matched {
+			return nil
+		}
+		select {
+		case <-time.After(time.Millisecond * 50):
+		case <-ctx.Done():
+			// cancellation means that we don't care about the input being
+			// confirmed anymore; not equivalent to a timeout.
+			return nil
+		}
+		if time.Now().After(abortTime) {
+			return fmt.Errorf("failed to capture pattern %q in %q", pattern, output)
+		}
+	}
+}
 
 // // TestInvalidLogins validates that you can't login with invalid login or
 // // with invalid 'site' parameter
@@ -2411,26 +2413,26 @@ func replaceNewlines(in string) string {
 // 	require.NoError(t, aux.StopAll())
 // }
 
-// func waitForClusters(tun reversetunnel.Server, expected int) func() bool {
-// 	return func() bool {
-// 		clusters, err := tun.GetSites()
-// 		if err != nil {
-// 			return false
-// 		}
+func waitForClusters(tun reversetunnel.Server, expected int) func() bool {
+	return func() bool {
+		clusters, err := tun.GetSites()
+		if err != nil {
+			return false
+		}
 
-// 		// Check the expected number of clusters are connected, and they have all
-// 		// connected with the past 10 seconds.
-// 		if len(clusters) >= expected {
-// 			for _, cluster := range clusters {
-// 				if time.Since(cluster.GetLastConnected()).Seconds() > 10.0 {
-// 					return false
-// 				}
-// 			}
-// 		}
+		// Check the expected number of clusters are connected, and they have all
+		// connected with the past 10 seconds.
+		if len(clusters) >= expected {
+			for _, cluster := range clusters {
+				if time.Since(cluster.GetLastConnected()).Seconds() > 10.0 {
+					return false
+				}
+			}
+		}
 
-// 		return true
-// 	}
-// }
+		return true
+	}
+}
 
 // func testTrustedTunnelNode(t *testing.T, suite *integrationTestSuite) {
 // 	ctx := context.Background()
